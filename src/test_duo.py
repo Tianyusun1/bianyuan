@@ -10,9 +10,9 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 def parse_args():
     parser = argparse.ArgumentParser()
     # 修改: help 信息表明是文件夹
-    parser.add_argument("--input", "-i", type=str, required=True, help="Input image FOLDER")
+    parser.add_argument("--input", "-i",type=str,  default="/home/sty/pyfile/sketchKeras_pytorch/data/test/images",help="Input image FOLDER")
     parser.add_argument(
-        "--output", "-o", type=str, default="output_sketches", help="Output image FOLDER"
+        "--output", "-o", type=str, default="/home/sty/pyfile/sketchKeras_pytorch/test_results/base", help="Output image FOLDER"
     )
     parser.add_argument(
         "--weight", "-w", type=str, default="/home/sty/pyfile/sketchKeras_pytorch/weights/model.pth", help="weight file"
@@ -40,7 +40,6 @@ def postprocess(pred, thresh=0.18, smooth=False):
 
     pred = np.amax(pred, 0)
     pred[pred < thresh] = 0
-    pred = 1 - pred
     pred *= 255
     pred = np.clip(pred, 0, 255).astype(np.uint8)
     if smooth:
