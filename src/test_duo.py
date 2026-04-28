@@ -10,7 +10,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 def parse_args():
     parser = argparse.ArgumentParser()
     # 修改: help 信息表明是文件夹
-    parser.add_argument("--input", "-i",type=str,  default="/home/sty/pyfile/sketchKeras_pytorch/data/test/images",help="Input image FOLDER")
+    parser.add_argument("--input", "-i",type=str,  default="/home/sty/pyfile/sketchKeras_pytorch/data/test_noisy/images_salt_pepper",help="Input image FOLDER")
     parser.add_argument(
         "--output", "-o", type=str, default="/home/sty/pyfile/sketchKeras_pytorch/test_results/base", help="Output image FOLDER"
     )
