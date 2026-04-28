@@ -56,9 +56,6 @@ def postprocess(pred, thresh=0.4, smooth=False):
     pred[pred < thresh] = 0.0
     
     # 这里保持黑底白线 (0为背景，255为边缘)，方便 evaluate.py 计算指标
-    # 如果你要看白底黑线（像素描一样），请取消下面这行的注释
-    # pred = 1.0 - pred 
-    
     pred *= 255.0
     pred = np.clip(pred, 0, 255).astype(np.uint8)
     
@@ -68,13 +65,13 @@ def postprocess(pred, thresh=0.4, smooth=False):
     return pred
 
 # ==========================================
-# 3. 核心批量推理逻辑
+# 3. 核心一键批量推理逻辑
 # ==========================================
-def batch_inference(args):
+def run_all_inference(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"🚀 [设备: {device}] 正在初始化推理引擎...")
     
-    # 1. 加载瘦身版模型
+    # 1. 仅加载一次模型，节省时间
     model = ImprovedEdgeNet(in_channels=1).to(device)
     
     if os.path.exists(args.weight):
@@ -86,66 +83,97 @@ def batch_inference(args):
         print(f"❌ 错误: 找不到权重文件 {args.weight}")
         return
 
-    # 2. 目录准备
-    os.makedirs(args.output_dir, exist_ok=True)
-    
-    valid_exts = ['.jpg', '.jpeg', '.png', '.bmp']
-    image_files = sorted([f for f in os.listdir(args.input_dir) if os.path.splitext(f)[1].lower() in valid_exts])
-    
-    if not image_files:
-        print(f"⚠️ 在 {args.input_dir} 没找到图！")
-        return
+    # 2. 定义三大测试场景的输入输出路径映射表
+    scenarios = [
+        {
+            "name": "干净原图 (Origin)",
+            "input": os.path.join(args.data_root, "test/images"),
+            "output": os.path.join(args.results_root, "test_results_origin/improve")
+        },
+        {
+            "name": "高斯噪声 (Gaussian Noise)",
+            "input": os.path.join(args.data_root, "test_noisy/images_gaussian"),
+            "output": os.path.join(args.results_root, "test_results_gaussian/improve")
+        },
+        {
+            "name": "椒盐噪声 (Salt & Pepper Noise)",
+            "input": os.path.join(args.data_root, "test_noisy/images_salt_pepper"),
+            "output": os.path.join(args.results_root, "test_results_salt_pepper/improve")
+        }
+    ]
 
-    print(f"开始处理 {len(image_files)} 张图片...")
+    # 3. 遍历每个场景进行推理
+    for s in scenarios:
+        print("\n" + "="*60)
+        print(f"🎯 开始处理场景: {s['name']}")
+        print("="*60)
 
-    # 3. 推理循环
-    for img_name in tqdm(image_files, desc="推理中"):
-        input_path = os.path.join(args.input_dir, img_name)
-        img = cv2.imread(input_path)
-        if img is None: continue
+        input_dir = s["input"]
+        output_dir = s["output"]
 
-        # 预处理
-        processed_img, new_size, orig_size = preprocess(img)
+        os.makedirs(output_dir, exist_ok=True)
         
-        # 转换为 Tensor [1, 1, 512, 512]
-        x = torch.from_numpy(processed_img).unsqueeze(0).unsqueeze(0).to(device)
+        valid_exts = ['.jpg', '.jpeg', '.png', '.bmp']
+        if not os.path.exists(input_dir):
+            print(f"⚠️ 警告: 找不到输入文件夹 {input_dir}，跳过此场景。")
+            continue
 
-        # 推理
-        with torch.no_grad():
-            # 瘦身版模型在 eval() 模式下直接返回融合后的 Tensor
-            pred_tensor = model(x)
+        image_files = sorted([f for f in os.listdir(input_dir) if os.path.splitext(f)[1].lower() in valid_exts])
         
-        # 后处理
-        pred_np = pred_tensor.squeeze().cpu().numpy()
-        # 裁掉填充部分
-        pred_np = pred_np[:new_size[0], :new_size[1]]
-        
-        output = postprocess(pred_np, thresh=args.thresh, smooth=args.smooth)
-        
-        # 还原尺寸
-        output_resized = cv2.resize(output, (orig_size[1], orig_size[0]), interpolation=cv2.INTER_CUBIC)
+        if not image_files:
+            print(f"⚠️ 警告: 在 {input_dir} 没找到图！跳过此场景。")
+            continue
 
-        # 保存为 PNG
-        out_name = os.path.splitext(img_name)[0] + ".png"
-        cv2.imwrite(os.path.join(args.output_dir, out_name), output_resized)
+        print(f"输出目录将保存至 -> {output_dir}")
 
-    print(f"\n🎉 处理完毕！结果保存在: {args.output_dir}")
+        for img_name in tqdm(image_files, desc=f"[{s['name']}] 推理进度"):
+            input_path = os.path.join(input_dir, img_name)
+            img = cv2.imread(input_path)
+            if img is None: continue
+
+            # 预处理
+            processed_img, new_size, orig_size = preprocess(img)
+            
+            # 转换为 Tensor [1, 1, 512, 512]
+            x = torch.from_numpy(processed_img).unsqueeze(0).unsqueeze(0).to(device)
+
+            # 推理
+            with torch.no_grad():
+                pred_tensor = model(x)
+            
+            # 后处理
+            pred_np = pred_tensor.squeeze().cpu().numpy()
+            pred_np = pred_np[:new_size[0], :new_size[1]] # 裁掉填充部分
+            
+            output = postprocess(pred_np, thresh=args.thresh, smooth=args.smooth)
+            
+            # 还原尺寸
+            output_resized = cv2.resize(output, (orig_size[1], orig_size[0]), interpolation=cv2.INTER_CUBIC)
+
+            # 保存为 PNG
+            out_name = os.path.splitext(img_name)[0] + ".png"
+            cv2.imwrite(os.path.join(output_dir, out_name), output_resized)
+
+    print("\n🎉 所有三大场景处理完毕！接下来您可以直接运行 evaluate.py 一键生成所有图表了！")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="瘦身版模型测试脚本")
+    parser = argparse.ArgumentParser(description="一键测试所有场景的瘦身版模型脚本")
     
-    # 使用你提供的绝对路径作为默认值
-    parser.add_argument("--input_dir", "-i", type=str, 
-                        default="/home/sty/pyfile/sketchKeras_pytorch/data/test/images", 
-                        help="测试图片目录")
-    parser.add_argument("--output_dir", "-o", type=str, 
-                        default="test_results/improve", 
-                        help="输出结果目录")
+    # 您的根目录定义 (脚本会自动基于这个根目录寻找子文件夹)
+    parser.add_argument("--data_root", type=str, 
+                        default="/home/sty/pyfile/sketchKeras_pytorch/data", 
+                        help="测试集存放的根目录 (data)")
+                        
+    parser.add_argument("--results_root", type=str, 
+                        default="/home/sty/pyfile/sketchKeras_pytorch", 
+                        help="输出结果存放的根目录 (包含 test_results_xxx)")
+                        
     parser.add_argument("--weight", "-w", type=str, 
-                        default="/home/sty/pyfile/sketchKeras_pytorch/weights/improved_edge_net_best.pth", 
-                        help="权重路径")
-    parser.add_argument("--thresh", "-t", type=float, default=0.4, help="阈值")
-    parser.add_argument("--smooth", action="store_true", help="开启中值平滑")
+                        default="/home/sty/pyfile/sketchKeras_pytorch/weights/improved_edge_net_robust_best.pth", 
+                        help="刚刚训练好的抗噪模型权重路径")
+                        
+    parser.add_argument("--thresh", "-t", type=float, default=0.4, help="二值化阈值")
+    parser.add_argument("--smooth", action="store_true", help="是否开启中值平滑")
     
     args = parser.parse_args()
-    batch_inference(args)
+    run_all_inference(args)

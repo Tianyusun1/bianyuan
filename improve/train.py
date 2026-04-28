@@ -6,12 +6,13 @@ from torch.utils.data import Dataset, DataLoader
 import cv2
 import numpy as np
 from tqdm import tqdm
+import random  # 新增：用于随机注入噪声
 
 # 确保文件名匹配（如果是 improve_model.py 则用这个名字）
 from improve_model import ImprovedEdgeNet
 
 # ==========================================
-# 1. 数据集加载器 (Dataset)
+# 1. 数据集加载器 (Dataset) - 增加抗噪数据增强
 # ==========================================
 class EdgeDataset(Dataset):
     def __init__(self, image_dir, mask_dir, img_size=512):
@@ -22,6 +23,33 @@ class EdgeDataset(Dataset):
 
     def __len__(self):
         return len(self.images)
+
+    def add_random_noise(self, img):
+        """核心改进：在线随机注入噪声（给模型打抗噪疫苗）"""
+        # 50% 的概率保持干净原图，50% 的概率加噪 (保证模型既能学干净的，也能学带噪的)
+        if random.random() < 0.5:
+            return img
+            
+        noise_type = random.choice(['gaussian', 'salt_pepper'])
+        
+        if noise_type == 'gaussian':
+            # 随机生成不同强度的高斯噪声 (std从10到30)
+            std = random.uniform(10, 30)
+            noise = np.random.normal(0, std, img.shape).astype(np.float32)
+            noisy_img = cv2.add(img.astype(np.float32), noise)
+            return np.clip(noisy_img, 0, 255).astype(np.uint8)
+            
+        else: # salt_pepper (椒盐噪声)
+            noisy_img = np.copy(img)
+            prob = random.uniform(0.01, 0.05) # 1% 到 5% 的椒盐噪声
+            rnd = np.random.rand(*noisy_img.shape[:2])
+            if len(noisy_img.shape) == 3:
+                noisy_img[rnd < prob/2] = [0, 0, 0]
+                noisy_img[(rnd >= prob/2) & (rnd < prob)] = [255, 255, 255]
+            else:
+                noisy_img[rnd < prob/2] = 0
+                noisy_img[(rnd >= prob/2) & (rnd < prob)] = 255
+            return noisy_img
 
     def preprocess_image(self, img):
         if len(img.shape) == 3:
@@ -46,6 +74,10 @@ class EdgeDataset(Dataset):
         # 读取图像
         img = cv2.imread(img_path)
         img = cv2.resize(img, (self.img_size, self.img_size))
+        
+        # 👉 【核心改动点】：在进行滤波和提取特征前，先随机注入噪声
+        img = self.add_random_noise(img)
+        
         img = self.preprocess_image(img)
         img = np.expand_dims(img, axis=0)
 
@@ -94,18 +126,18 @@ class EdgeAwareLoss(nn.Module):
 # ==========================================
 def train():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"🚀 [设备: {device}] 正在启动精简架构优化训练...")
+    print(f"🚀 [设备: {device}] 正在启动抗噪优化训练 (在线数据增强)...")
 
     # 超参数
     batch_size = 4
     num_epochs = 50 
-    learning_rate = 1e-3 # 你调高的 LR 非常关键
+    learning_rate = 1e-3 # 调高的 LR 非常关键
 
-    # 路径配置
-    train_img_dir = "data/train/images"
-    train_mask_dir = "data/train/masks"
-    val_img_dir = "data/val/images"
-    val_mask_dir = "data/val/masks"
+    # 路径配置 (使用您的绝对路径更安全，如果您之前用相对路径没问题，也可保持)
+    train_img_dir = "/home/sty/pyfile/sketchKeras_pytorch/data/train/images"
+    train_mask_dir = "/home/sty/pyfile/sketchKeras_pytorch/data/train/masks"
+    val_img_dir = "/home/sty/pyfile/sketchKeras_pytorch/data/val/images"
+    val_mask_dir = "/home/sty/pyfile/sketchKeras_pytorch/data/val/masks"
     os.makedirs("weights", exist_ok=True)
 
     # 加载器
@@ -117,7 +149,7 @@ def train():
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     criterion = EdgeAwareLoss(alpha=0.3)
     
-    # 学习率策略：前 20 轮猛冲，后面每 15 轮减半
+    # 学习率策略：前 15 轮猛冲，后面每 15 轮减半
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=15, gamma=0.5)
 
     best_val_loss = float('inf')
@@ -170,14 +202,14 @@ def train():
 
         print(f"📈 Epoch [{epoch+1}/{num_epochs}] | Train Loss: {train_loss/len(train_loader):.4f} | Val Loss: {avg_val:.4f} | LR: {scheduler.get_last_lr()[0]:.6f}")
 
-        # 智能保存最佳权重
+        # 智能保存最佳权重 (改了名字，防止覆盖您之前的模型)
         if avg_val < best_val_loss:
             best_val_loss = avg_val
-            torch.save(model.state_dict(), "weights/improved_edge_net_best.pth")
-            print(f"   🌟 发现更优模型 (Loss: {best_val_loss:.4f})，已保存。")
+            torch.save(model.state_dict(), "weights/improved_edge_net_robust_best.pth")
+            print(f"   🌟 发现更优抗噪模型 (Loss: {best_val_loss:.4f})，已保存。")
 
         if (epoch + 1) % 10 == 0:
-            torch.save(model.state_dict(), f"weights/improved_edge_net_epoch_{epoch+1}.pth")
+            torch.save(model.state_dict(), f"weights/improved_edge_net_robust_epoch_{epoch+1}.pth")
 
 if __name__ == "__main__":
     train()
